@@ -44,6 +44,7 @@ by('clearCrop').onclick=()=>{box=null;refreshSelection();};
 function update(key,hit,rect){
   by(key).value=hit.value;by(key+'Label').textContent=hit.label;
   by(key+'Mark')?.remove();
+  if(!rect&&!hit.box)return;
   const mark=document.createElement('span');mark.id=key+'Mark';mark.className='mark '+key;
   drawBox(mark,rect||Object.fromEntries(edges.map(edge=>[edge,hit.box[edge]/1000])));
   preview.parentElement.append(mark);
@@ -52,7 +53,7 @@ async function recognize(image,target,rect){
   controller?.abort();
   const current=new AbortController();controller=current;
   const status=by('status');
-  status.textContent=target?'正在读取框选标注…':'正在读取图纸标注…';
+  status.textContent=target?'正在读取框选标注…':'正在识别整图并放大局部标注…';
   try{
     const endpoint=target?'/api/recognize?target='+target:'/api/recognize';
     const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':image.type},body:image,signal:current.signal});
