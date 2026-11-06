@@ -1,0 +1,32 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>球阀图纸尺寸识别</title>
+<style>body{font:16px system-ui;margin:0;background:#edf2f5;color:#183040}header{background:#102737;color:white;padding:24px 5vw}main{max-width:1180px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:2fr 1fr;gap:18px}section{background:white;border-radius:12px;padding:20px}label{display:block;margin-top:16px}input{max-width:100%;font:inherit}input[type=text]{width:95%;padding:8px}.preview{position:relative;margin-top:16px}img{display:block;width:100%}.mark{position:absolute;border:2px solid #00776b;box-sizing:border-box;pointer-events:none}.outer{border-color:#a36800}@media(max-width:750px){main{grid-template-columns:1fr}}</style>
+<header><h1>球阀图纸尺寸识别</h1></header><main><section><label for="file">上传图纸</label><input id="file" type="file" accept="image/png,image/jpeg,image/webp"><div class="preview"><img id="preview" alt="上传的图纸" hidden></div></section>
+<section><h2>识别结果</h2><p id="status" role="status">请选择图纸图片。</p><label for="inner">流道内径（mm）</label><input id="inner" type="text"><p id="innerLabel"></p><label for="outer">球体外圆直径（mm）</label><input id="outer" type="text"><p id="outerLabel"></p></section></main>
+<script>
+const by=id=>document.getElementById(id);
+let url,controller;
+by('file').onchange=async event=>{
+  const file=event.target.files[0];if(!file)return;
+  controller?.abort();const current=new AbortController();controller=current;
+  if(url)URL.revokeObjectURL(url);
+  url=URL.createObjectURL(file);
+  const preview=by('preview');preview.src=url;preview.hidden=false;
+  document.querySelectorAll('.mark').forEach(mark=>mark.remove());
+  for(const key of ['inner','outer']){by(key).value='';by(key+'Label').textContent='';}
+  by('status').textContent='正在读取图纸标注…';
+  try{
+    const response=await fetch('/api/recognize',{method:'POST',headers:{'Content-Type':file.type},body:file,signal:current.signal});
+    const result=await response.json();
+    if(current!==controller)return;
+    if(!response.ok)throw Error(result.error);
+    for(const key of ['inner','outer']){
+      const hit=result[key];if(!hit)continue;
+      by(key).value=hit.value;by(key+'Label').textContent=hit.label;
+      const mark=document.createElement('span');mark.className='mark '+key;
+      for(const name of ['left','top','width','height'])mark.style[name]=hit.box[name]/10+'%';
+      preview.parentElement.append(mark);
+    }
+    by('status').textContent=result.inner&&result.outer?'已填入公称值，请核对原图标注。':'部分标注无法确认，请核对图纸并补填。';
+  }catch(error){if(current===controller)by('status').textContent=error.message||'识别失败，请重试。';}
+};
+</script></html>
