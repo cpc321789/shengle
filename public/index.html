@@ -1,32 +1,103 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>球阀图纸尺寸识别</title>
-<style>body{font:16px system-ui;margin:0;background:#edf2f5;color:#183040}header{background:#102737;color:white;padding:24px 5vw}main{max-width:1180px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:2fr 1fr;gap:18px}section{background:white;border-radius:12px;padding:20px}label{display:block;margin-top:16px}input{max-width:100%;font:inherit}input[type=text]{width:95%;padding:8px}.preview{position:relative;margin-top:16px}img{display:block;width:100%}.mark{position:absolute;border:2px solid #00776b;box-sizing:border-box;pointer-events:none}.outer{border-color:#a36800}@media(max-width:750px){main{grid-template-columns:1fr}}</style>
-<header><h1>球阀图纸尺寸识别</h1></header><main><section><label for="file">上传图纸</label><input id="file" type="file" accept="image/png,image/jpeg,image/webp"><div class="preview"><img id="preview" alt="上传的图纸" hidden></div></section>
+<style>body{font:16px system-ui;margin:0;background:#edf2f5;color:#183040}header{background:#102737;color:white;padding:24px 5vw}main{max-width:1180px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:2fr 1fr;gap:18px}section{background:white;border-radius:12px;padding:20px}label{display:block;margin-top:16px}input{max-width:100%;font:inherit}input[type=text]{width:95%;padding:8px}.preview{position:relative;margin-top:16px}img{display:block;width:100%}.mark{position:absolute;border:2px solid #00776b;box-sizing:border-box;pointer-events:none}.outer{border-color:#a36800}@media(max-width:750px){main{grid-template-columns:1fr}}.preview img{touch-action:none;cursor:crosshair}.selection{border:2px dashed #1261aa;background:#1261aa22}.mark[hidden]{display:none}button{margin:6px 6px 0 0;padding:7px 10px}</style>
+<header><h1>球阀图纸尺寸识别</h1></header><main><section><label for="file">上传图纸</label><input id="file" type="file" accept="image/png,image/jpeg,image/webp"><div class="preview"><img id="preview" alt="上传的图纸" draggable="false" hidden><span id="selection" class="mark selection" hidden></span></div><div id="cropControls" hidden><p>在图上拖框，只圈住要复识的一个直径标注。</p><button id="cropInner" disabled>框选复识内径</button><button id="cropOuter" disabled>框选复识外圆</button><button id="clearCrop" disabled>清除选框</button></div></section>
 <section><h2>识别结果</h2><p id="status" role="status">请选择图纸图片。</p><label for="inner">流道内径（mm）</label><input id="inner" type="text"><p id="innerLabel"></p><label for="outer">球体外圆直径（mm）</label><input id="outer" type="text"><p id="outerLabel"></p></section></main>
 <script>
 const by=id=>document.getElementById(id);
-let url,controller;
-by('file').onchange=async event=>{
-  const file=event.target.files[0];if(!file)return;
-  controller?.abort();const current=new AbortController();controller=current;
-  if(url)URL.revokeObjectURL(url);
-  url=URL.createObjectURL(file);
-  const preview=by('preview');preview.src=url;preview.hidden=false;
-  document.querySelectorAll('.mark').forEach(mark=>mark.remove());
-  for(const key of ['inner','outer']){by(key).value='';by(key+'Label').textContent='';}
-  by('status').textContent='正在读取图纸标注…';
+const preview=by('preview'), selection=by('selection');
+const keys=['inner','outer'], edges=['left','top','width','height'];
+let url,controller,box,anchor,cropping=false;
+function drawBox(element,rect){
+  for(const edge of edges)element.style[edge]=rect[edge]*100+'%';
+}
+function refreshSelection(){
+  selection.hidden=!box;
+  if(box)drawBox(selection,box);
+  for(const id of ['cropInner','cropOuter','clearCrop'])by(id).disabled=!box||!!anchor||cropping;
+}
+function point(event){
+  const rect=preview.getBoundingClientRect();
+  const clamp=value=>Math.max(0,Math.min(1,value));
+  return {x:clamp((event.clientX-rect.left)/rect.width),y:clamp((event.clientY-rect.top)/rect.height)};
+}
+preview.onpointerdown=event=>{
+  if(!event.isPrimary||event.button!==0||!preview.naturalWidth||cropping)return;
+  anchor=point(event);box=null;
+  preview.setPointerCapture(event.pointerId);
+  refreshSelection();
+};
+preview.onpointermove=event=>{
+  if(!anchor||!event.isPrimary)return;
+  const {x,y}=point(event);
+  box={left:Math.min(x,anchor.x),top:Math.min(y,anchor.y),width:Math.abs(x-anchor.x),height:Math.abs(y-anchor.y)};
+  refreshSelection();
+};
+preview.onpointerup=event=>{
+  if(!anchor||!event.isPrimary)return;
+  preview.onpointermove(event);
+  const bounds=preview.getBoundingClientRect();
+  if(box.width*bounds.width<5||box.height*bounds.height<5)box=null;
+  anchor=null;refreshSelection();
+};
+preview.onpointercancel=()=>{anchor=null;box=null;refreshSelection();};
+by('clearCrop').onclick=()=>{box=null;refreshSelection();};
+function update(key,hit,rect){
+  by(key).value=hit.value;by(key+'Label').textContent=hit.label;
+  by(key+'Mark')?.remove();
+  const mark=document.createElement('span');mark.id=key+'Mark';mark.className='mark '+key;
+  drawBox(mark,rect||Object.fromEntries(edges.map(edge=>[edge,hit.box[edge]/1000])));
+  preview.parentElement.append(mark);
+}
+async function recognize(image,target,rect){
+  controller?.abort();
+  const current=new AbortController();controller=current;
+  const status=by('status');
+  status.textContent=target?'正在读取框选标注…':'正在读取图纸标注…';
   try{
-    const response=await fetch('/api/recognize',{method:'POST',headers:{'Content-Type':file.type},body:file,signal:current.signal});
+    const endpoint=target?'/api/recognize?target='+target:'/api/recognize';
+    const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':image.type},body:image,signal:current.signal});
     const result=await response.json();
     if(current!==controller)return;
     if(!response.ok)throw Error(result.error);
-    for(const key of ['inner','outer']){
-      const hit=result[key];if(!hit)continue;
-      by(key).value=hit.value;by(key+'Label').textContent=hit.label;
-      const mark=document.createElement('span');mark.className='mark '+key;
-      for(const name of ['left','top','width','height'])mark.style[name]=hit.box[name]/10+'%';
-      preview.parentElement.append(mark);
+    if(target){
+      if(result[target]){
+        update(target,result[target],rect);box=null;refreshSelection();
+        status.textContent='已更新框选尺寸，请与图纸核对。';
+      }else status.textContent='没能确认框内尺寸。请重新框选一个清晰的直径标注。';
+      return;
     }
-    by('status').textContent=result.inner&&result.outer?'已填入公称值，请核对原图标注。':'部分标注无法确认，请核对图纸并补填。';
-  }catch(error){if(current===controller)by('status').textContent=error.message||'识别失败，请重试。';}
+    for(const key of keys)if(result[key])update(key,result[key]);
+    status.textContent=result.inner&&result.outer?'已填入公称值。识别有误时可拖框复识。':'部分标注无法确认，可拖框复识或手动补填。';
+  }catch(error){if(current===controller)status.textContent=error.message||'识别失败，请重试。';}
+}
+async function recognizeCrop(target){
+  if(!box||cropping)return;
+  const rect={...box}, source=url;
+  const w=preview.naturalWidth,h=preview.naturalHeight;
+  const canvas=document.createElement('canvas');
+  const scale=Math.min(3,1400/Math.max(rect.width*w,rect.height*h));
+  canvas.width=Math.ceil(rect.width*w*scale)+24;
+  canvas.height=Math.ceil(rect.height*h*scale)+24;
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='white';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(preview,rect.left*w,rect.top*h,rect.width*w,rect.height*h,12,12,canvas.width-24,canvas.height-24);
+  cropping=true;refreshSelection();
+  try{
+    const image=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.94));
+    if(source!==url)return;
+    if(!image){by('status').textContent='无法读取框选区域，请重新框选。';return;}
+    await recognize(image,target,rect);
+  }finally{if(source===url){cropping=false;refreshSelection();}}
+}
+by('cropInner').onclick=()=>recognizeCrop('inner');
+by('cropOuter').onclick=()=>recognizeCrop('outer');
+by('file').onchange=event=>{
+  const file=event.target.files[0];if(!file)return;
+  if(url)URL.revokeObjectURL(url);
+  url=URL.createObjectURL(file);
+  preview.src=url;preview.hidden=false;by('cropControls').hidden=false;
+  box=null;anchor=null;cropping=false;refreshSelection();
+  for(const key of keys){by(key+'Mark')?.remove();by(key).value='';by(key+'Label').textContent='';}
+  recognize(file);
 };
 </script></html>
