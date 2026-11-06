@@ -28,33 +28,31 @@ function imageInput(bytes, type) {
   return {type:'input_image',image_url:'data:' + type + ';base64,' + Buffer.from(bytes).toString('base64'),detail:'high'};
 }
 
-async function drawingInputs(bytes, type) {
-  let source = sharp(bytes, {limitInputPixels: 25000000});
-  const metadata = await source.metadata();
-  let original = imageInput(bytes, type);
-  if (metadata.orientation > 1) {
-    const upright = await source.autoOrient().png().toBuffer();
-    source = sharp(upright, {limitInputPixels: 25000000});
-    original = imageInput(upright, 'image/png');
-  }
-  const {width, height} = metadata.autoOrient;
+async function drawingInputs(bytes) {
+  const source = sharp(bytes, {limitInputPixels: 25000000});
+  const {width, height} = (await source.metadata()).autoOrient;
+  const normalized = await source.autoOrient().flatten({background:'#ffffff'}).jpeg({quality:92}).toBuffer();
+  const upright = sharp(normalized);
   const tileWidth = Math.ceil(width * .63);
   const tileHeight = Math.ceil(height * .63);
   const regions = [
     [0, 0], [width-tileWidth, 0],
     [0, height-tileHeight], [width-tileWidth, height-tileHeight]
   ];
-  const tiles = await Promise.all(regions.map(async ([left, top]) => {
-    const ratio = Math.min(1.6, 1500 / Math.max(tileWidth, tileHeight));
-    const tile = await source.clone().extract({left,top,width:tileWidth,height:tileHeight})
-      .resize({width:Math.max(1,Math.round(tileWidth*ratio))})
-      .flatten({background:'#ffffff'}).png().toBuffer();
-    return [
-      {type:'input_text',text:'Magnified crop of the same drawing. Its bounds in the whole image, on the 0–1000 scale, are left=' + Math.round(left/width*1000) + ', top=' + Math.round(top/height*1000) + ', width=' + Math.round(tileWidth/width*1000) + ', height=' + Math.round(tileHeight/height*1000) + '. Report any box in whole-image coordinates.'},
-      imageInput(tile,'image/png')
-    ];
-  }));
-  return [{type:'input_text',text:'Whole original drawing, followed by four overlapping magnified regions.'}, original, ...tiles.flat()];
+  const cell = {width:760,height:620,fit:'contain',background:'#ffffff'};
+  const panels = await Promise.all([
+    upright.clone().resize({width:760,height:1240,fit:'contain',background:'#ffffff'}).toBuffer(),
+    ...regions.map(([left,top]) => upright.clone()
+      .extract({left,top,width:tileWidth,height:tileHeight}).resize(cell).toBuffer())
+  ]);
+  const positions = [[0,0],[760,0],[1520,0],[760,620],[1520,620]];
+  const montage = await sharp({create:{width:2280,height:1240,channels:3,background:'#eeeeee'}})
+    .composite(panels.map((input,index)=>({input,left:positions[index][0],top:positions[index][1]})))
+    .jpeg({quality:87}).toBuffer();
+  return [
+    {type:'input_text',text:'This one composite image shows the full drawing in the left column. The right four panels magnify overlapping parts of that same drawing in reading order: upper-left, upper-right, lower-left, lower-right. Each crop covers 63% of original width and height, with offsets 0% or 37%. Base your reported boxes on the original drawing, excluding the white panel padding.'},
+    imageInput(montage,'image/jpeg')
+  ];
 }
 
 const json = (value, status = 200) => Response.json(value, {status});
@@ -76,7 +74,7 @@ export default async function recognize(request) {
     try {
       const bytes = new Uint8Array(await request.arrayBuffer());
       if (!bytes.length || bytes.length > limit) return json({error:'图片为空或超过 4 MB。'},413);
-      const content = target ? [imageInput(bytes,type)] : await drawingInputs(bytes,type);
+      const content = target ? [imageInput(bytes,type)] : await drawingInputs(bytes);
       const client = new OpenAI({timeout: 24000, maxRetries: 0});
       const result = await client.responses.create({
         model: process.env.OPENAI_VISION_MODEL || 'gpt-4.1',
@@ -93,6 +91,7 @@ export default async function recognize(request) {
       if (inner && outer && inner.value >= outer.value) return json({inner:null,outer:null});
       return json({inner,outer});
     } catch (error) {
+      console.error('recognize failed', {mode:target || 'full', name:error?.name, status:error?.status, code:error?.code});
       if (error instanceof OpenAI.APIConnectionTimeoutError) return json({error:'视觉识别超时，请稍后重试。'},504);
       return json({error:'图纸识别失败，请重试。'},502);
     }
