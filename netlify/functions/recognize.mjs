@@ -41,9 +41,9 @@ export default async function recognize(request) {
       const bytes = new Uint8Array(await request.arrayBuffer());
       if (!bytes.length || bytes.length > limit) return json({error:'图片为空或超过 4 MB。'},413);
       const binary = Buffer.from(bytes).toString('base64');
-      const client = new OpenAI();
+      const client = new OpenAI({timeout: 24000, maxRetries: 0});
       const result = await client.responses.create({
-        model: process.env.OPENAI_VISION_MODEL || 'gpt-5',
+        model: process.env.OPENAI_VISION_MODEL || 'gpt-4.1',
         store:false,
         instructions,
         input:[{role:'user',content:[{type:'input_image',image_url:'data:' + type + ';base64,' + binary,detail:'high'}]}],
@@ -54,7 +54,8 @@ export default async function recognize(request) {
       const inner = validate(data.inner), outer = validate(data.outer);
       if (inner && outer && inner.value >= outer.value) return json({inner:null,outer:null});
       return json({inner,outer});
-    } catch {
+    } catch (error) {
+      if (error instanceof OpenAI.APIConnectionTimeoutError) return json({error:'视觉识别超时，请稍后重试。'},504);
       return json({error:'图纸识别失败，请重试。'},502);
     }
 }
